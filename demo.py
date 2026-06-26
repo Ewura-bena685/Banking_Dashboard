@@ -35,7 +35,7 @@ with st.sidebar:
     )
     office = st.selectbox(
         "Office location",
-        ["Accra", "Tema", "Kumasi", "Takoradi", "Tamale"],
+        ["Accra", "Tema", "Kumasi", "Takoradi", "Ho", "Tamale"],
     )
     st.divider()
 
@@ -58,7 +58,7 @@ with st.sidebar:
         horizontal=True,
     )
     st.divider()
-    st.caption("Leave data source as 'Random demo data' to see a sample banking performance dashboard. Upload your own CSV with the required columns to visualize your specific data.")
+    st.caption("Upload your own CSV with the required columns to visualize your specific data.")
     if data_source == "Upload CSV":
         uploaded_file = st.file_uploader(
             "Upload banking CSV",
@@ -385,4 +385,4 @@ with export_col_m:
         mime="application/json",
     )
 
-st.markdown(f"<p style='text-align: center; color: {selected_theme['secondary']}; font-size: 12px;'>Built by Esther Ewurabena Appiah | appiahewurabena685@gmail.com | github.com/Ewura-bena685</p>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center; color: {selected_theme['secondary']}; font-size: 12px;'>Built by Esther Ewurabena Appiah | https://www.linkedin.com/in/esther-ewurabena-appiah/ | github.com/Ewura-bena685</p>", unsafe_allow_html=True)
