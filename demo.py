@@ -22,6 +22,7 @@ DEFAULT_THEME = {
     "light_bg": "#e3f2fd",
 }
 
+uploaded_file = None
 with st.sidebar:
     st.header("Report controls")
     selected_theme = DEFAULT_THEME
@@ -44,7 +45,12 @@ with st.sidebar:
         ["Random demo data", "Upload CSV"],
         index=0,
     )
-    n_points = st.slider("Reporting months", min_value=6, max_value=24, value=12, step=1)
+    if data_source == "Random demo data":
+        n_points = st.slider("Reporting months", min_value=6, max_value=24, value=12, step=1)
+    else:
+        n_points = 12
+        st.info("Upload CSV mode uses your file data and ignores the demo months slider.")
+
     chart_type = st.radio(
         "Chart focus",
         ["Revenue & Balance", "Loan/Deposit Growth", "Transaction Volume"],
@@ -53,6 +59,13 @@ with st.sidebar:
     )
     st.divider()
     st.caption("Leave data source as 'Random demo data' to see a sample banking performance dashboard. Upload your own CSV with the required columns to visualize your specific data.")
+    if data_source == "Upload CSV":
+        uploaded_file = st.file_uploader(
+            "Upload banking CSV",
+            type=["csv"],
+            key="uploaded_csv",
+            help="Include Month, Revenue, Transactions, Balance, Deposits, Loans, and NPS columns.",
+        )
 
 # Apply theme CSS to entire dashboard
 theme_css = f"""
@@ -113,15 +126,6 @@ responsive_css = f"""
 """
 st.markdown(responsive_css, unsafe_allow_html=True)
 
-uploaded_file = None
-if data_source == "Upload CSV":
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload banking CSV",
-        type=["csv"],
-        help="Include Month, Revenue, Transactions, Balance, Deposits, Loans, and NPS columns.",
-    )
-
-
 @st.cache_data(ttl=3600)
 def generate_demo_data(n_points: int) -> pd.DataFrame:
     np.random.seed(42)
@@ -145,18 +149,58 @@ def generate_demo_data(n_points: int) -> pd.DataFrame:
 
 
 def load_uploaded_csv(uploaded) -> pd.DataFrame | None:
+    required_columns = {"Month", "Revenue", "Transactions", "Balance", "Deposits", "Loans", "NPS"}
     try:
         df_local = pd.read_csv(uploaded)
-        # normalize Month column if present
-        if "Month" in df_local.columns:
-            try:
-                df_local["Month"] = pd.to_datetime(df_local["Month"]).dt.strftime("%Y-%m")
-            except Exception:
-                df_local["Month"] = df_local["Month"].astype(str)
-        return df_local
     except Exception as exc:
         st.sidebar.warning(f"Upload failed: {exc}. Using demo data instead.")
         return None
+
+    missing = required_columns - set(df_local.columns)
+    if missing:
+        st.sidebar.warning(
+            f"Upload failed: Missing columns {', '.join(sorted(missing))}. Using demo data instead."
+        )
+        return None
+
+    df_local = df_local.copy()
+    df_local["Month"] = pd.to_datetime(df_local["Month"], errors="coerce")
+    if df_local["Month"].isna().all():
+        st.sidebar.warning(
+            "Upload failed: Month values could not be parsed. Using demo data instead."
+        )
+        return None
+    if df_local["Month"].isna().any():
+        st.sidebar.warning(
+            "Upload warning: Some Month values were invalid and dropped."
+        )
+        df_local = df_local.dropna(subset=["Month"]).copy()
+    df_local["Month"] = df_local["Month"].dt.strftime("%Y-%m")
+    df_local = df_local.sort_values("Month").reset_index(drop=True)
+
+    numeric_cols = ["Revenue", "Transactions", "Balance", "Deposits", "Loans", "NPS"]
+    for col in numeric_cols:
+        df_local[col] = pd.to_numeric(df_local[col], errors="coerce")
+
+    if df_local[numeric_cols].isna().any().any():
+        st.sidebar.warning(
+            "Upload failed: Some numeric values are invalid. Using demo data instead."
+        )
+        return None
+
+    return df_local
+
+
+def format_currency(value: float) -> str:
+    return f"GHS {value:,.0f}"
+
+
+def format_delta(value: float) -> str:
+    return f"{value:+.1f}%"
+
+
+def safe_growth(current: float, previous: float) -> float:
+    return ((current - previous) / previous) * 100 if previous else 0
 
 
 @st.cache_data(ttl=600)
@@ -207,24 +251,24 @@ if name:
         f"Welcome, **{name}** — reviewing banking performance for **{role}** in **{office}**."
     )
 
-revenue_total = int(df["Revenue"].sum())
-avg_transactions = int(df["Transactions"].mean())
-peak_revenue = int(df["Revenue"].max())
-peak_month = df.loc[df["Revenue"].idxmax(), "Month"]
-deposit_total = int(df["Deposits"].sum())
-loan_total = int(df["Loans"].sum())
+revenue_total = df["Revenue"].sum()
+avg_transactions = df["Transactions"].mean()
+peak_revenue = df["Revenue"].max()
+peak_month = df.loc[df["Revenue"].idxmax(), "Month"] if not df.empty else "N/A"
+deposit_total = df["Deposits"].sum()
+loan_total = df["Loans"].sum()
 avg_nps = df["NPS"].mean().round(1)
 loan_deposit_ratio = loan_total / deposit_total if deposit_total else 0
-revenue_growth = ((df["Revenue"].iloc[-1] - df["Revenue"].iloc[-2]) / df["Revenue"].iloc[-2]) * 100 if len(df) > 1 else 0
-deposit_growth = ((df["Deposits"].iloc[-1] - df["Deposits"].iloc[-2]) / df["Deposits"].iloc[-2]) * 100 if len(df) > 1 else 0
+revenue_growth = safe_growth(df["Revenue"].iloc[-1], df["Revenue"].iloc[-2]) if len(df) > 1 else 0
+deposit_growth = safe_growth(df["Deposits"].iloc[-1], df["Deposits"].iloc[-2]) if len(df) > 1 else 0
 nps_trend = df["NPS"].iloc[-1] - df["NPS"].iloc[-2] if len(df) > 1 else 0
 
 st.markdown(f"<h3 style='color: {selected_theme['primary']}; border-left: 5px solid {selected_theme['accent']}; padding-left: 10px;'>Executive Snapshot</h3>", unsafe_allow_html=True)
 metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
-metric_col1.metric("Total Revenue", f"GHS {revenue_total:,}", delta=f"{revenue_growth:.1f}%")
-metric_col2.metric("Total Deposits", f"GHS {deposit_total:,}", delta=f"{deposit_growth:.1f}%")
-metric_col3.metric("Total Loans", f"GHS {loan_total:,}")
-metric_col4.metric("Avg NPS", f"{avg_nps}", delta=f"{nps_trend:+}")
+metric_col1.metric("Total Revenue", format_currency(revenue_total), delta=format_delta(revenue_growth))
+metric_col2.metric("Total Deposits", format_currency(deposit_total), delta=format_delta(deposit_growth))
+metric_col3.metric("Total Loans", format_currency(loan_total))
+metric_col4.metric("Avg NPS", f"{avg_nps}", delta=format_delta(nps_trend))
 metric_col5.metric("Loan/Deposit Ratio", f"{loan_deposit_ratio:.2f}")
 
 # small tooltip icons (hover shows explanation)
@@ -244,38 +288,7 @@ performance_tab, portfolio_tab, insights_tab = st.tabs([
 
 with performance_tab:
     st.markdown(f"<h3 style='color: {selected_theme['primary']}; border-left: 5px solid {selected_theme['accent']}; padding-left: 10px;'>Key Banking Performance</h3>", unsafe_allow_html=True)
-    if chart_type == "Revenue & Balance":
-        fig = px.line(
-            df,
-            x="Month",
-            y=["Revenue", "Balance"],
-            labels={"value": "Amount (GHS)", "variable": "Metric"},
-            title="Revenue and Balance Trend",
-        )
-    elif chart_type == "Transaction Volume":
-        fig = px.bar(
-            df,
-            x="Month",
-            y="Transactions",
-            title="Monthly Transaction Volume",
-            labels={"Transactions": "Transactions"},
-            color_discrete_sequence=[selected_theme["primary"]],
-        )
-    else:
-        fig = px.line(
-            df,
-            x="Month",
-            y=["Loans", "Deposits"],
-            labels={"value": "Amount (GHS)", "variable": "Metric"},
-            title="Loan and Deposit Growth",
-        )
-    fig.update_traces(line=dict(color=selected_theme["primary"]), selector=dict(mode="lines"))
-    fig.update_layout(
-        height=520,
-        margin=dict(l=10, r=10, t=45, b=10),
-        template=selected_theme["template"],
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(make_plot(df, chart_type, selected_theme), use_container_width=True)
 
     st.markdown(f"<h3 style='color: {selected_theme['primary']}; border-left: 5px solid {selected_theme['accent']}; padding-left: 10px;'>Balance and Customer Sentiment</h3>", unsafe_allow_html=True)
     left_col, right_col = st.columns(2)
@@ -294,10 +307,11 @@ with portfolio_tab:
     )
     portfolio_col1, portfolio_col2 = st.columns(2)
     with portfolio_col1:
-        st.metric("Average Loan Balance", f"GHS {int(df['Loans'].mean()):,}")
-        st.metric("Average Deposit Balance", f"GHS {int(df['Deposits'].mean()):,}")
+        st.metric("Average Loan Balance", format_currency(df['Loans'].mean()))
+        st.metric("Average Deposit Balance", format_currency(df['Deposits'].mean()))
     with portfolio_col2:
-        st.metric("Revenue per Transaction", f"GHS {int(df['Revenue'].sum() / df['Transactions'].sum()):,}")
+        revenue_per_trans = df['Revenue'].sum() / df['Transactions'].sum() if df['Transactions'].sum() else 0
+        st.metric("Revenue per Transaction", format_currency(revenue_per_trans))
         st.metric("Customer retention proxy", f"{avg_nps}%")
 
     st.markdown(f"<h3 style='color: {selected_theme['primary']}; border-left: 5px solid {selected_theme['accent']}; padding-left: 10px;'>Portfolio Charts</h3>", unsafe_allow_html=True)
